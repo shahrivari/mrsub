@@ -1,0 +1,13 @@
+<component name="ArtifactManager">
+  <artifact type="jar" build-on-make="true" name="MRSUBNG:jar">
+    <output-path>$PROJECT_DIR$/out/</output-path>
+    <root id="archive" name="MRSUBNG.jar">
+      <element id="module-output" name="MRSUBNG" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/hppc-0.6.0.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/subdiggerlib.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/commons-cli-1.2.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/guava-16.0.1.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/hadoop-core-1.2.1.jar" path-in-jar="/" />
+    </root>
+  </artifact>
+</component>
