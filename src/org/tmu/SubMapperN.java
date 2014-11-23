@@ -65,7 +65,7 @@ public class SubMapperN
 
     @Override
     protected void setup(Context context) throws IOException, InterruptedException {
-        SubGraphStructure.beFast = false;
+        SubGraphStructure.beFast = context.getConfiguration().getBoolean("be_fast", false);
         if (graph == null) {
             Path pt = new Path(context.getConfiguration().get("input_path"));
             FileSystem fs = FileSystem.get(context.getConfiguration());

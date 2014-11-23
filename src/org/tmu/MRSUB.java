@@ -32,7 +32,6 @@ import java.util.concurrent.TimeUnit;
  */
 public class MRSUB extends Configured implements Tool {
 
-    static private Path WORK_DIR;
     static private final int max_par = 5000;
     static String input_path = "";
     static boolean verbose = false;
@@ -42,15 +41,104 @@ public class MRSUB extends Configured implements Tool {
     static HelpFormatter formatter = new HelpFormatter();
     static Options options = new Options();
     static Graph graph = null;
+    static private Path WORK_DIR;
 
-    private class Edge {
-        int src;
-        int dest;
+    public static void main(String[] args) throws Exception {
+        // create the Options
+        Stopwatch watch = new Stopwatch().start();
+        options.addOption("nm", "nmap", true, "number of map tasks.");
+        options.addOption("nr", "nreduce", true, "number of reduce tasks.");
+        options.addOption("y", "overwrite", false, "overwrite output if exists.");
+        options.addOption("v", "verbose", false, "verbose mode.");
+        options.addOption("mp", "max-par", false, "use maximum parallelism for map tasks. If edges<" + max_par + " then mp=" + max_par + " else mp=#edges.");
+        options.addOption("i", "input", true, "the input graph's file name.");
+        options.addOption("s", "size", true, "size of subgraphs to enumerate.");
+        options.addOption("l", "local", true, "run locally and dump labels to output file.");
+        options.addOption("f", "fast", false, "faster isomorphism heuristic.");
+        options.addOption("x", "max", true, "run for at most x seconds (just works in local mode).");
 
-        public Edge(int src, int dest) {
-            this.src = src;
-            this.dest = dest;
+        parser = new BasicParser();
+        commandLine = parser.parse(options, args);
+
+        if (commandLine.hasOption("v"))
+            verbose = true;
+
+        if (commandLine.hasOption("f"))
+            SubGraphStructure.beFast = true;
+
+        if (commandLine.hasOption("s")) {
+            subgraph_size = Integer.parseInt(commandLine.getOptionValue("s"));
+            if (subgraph_size < 3) {
+                System.out.println("Size of subgraphs must be greater or equal to 3.");
+                System.exit(-1);
+            }
+        } else {
+            System.out.println("Size of subgraphs must be given.");
+            formatter.printHelp("MRSUB", options);
+            System.exit(-1);
         }
+
+        if (commandLine.hasOption("i")) {
+            input_path = commandLine.getOptionValue("i");
+        } else {
+            System.out.println("Input file must be given.");
+            formatter.printHelp("MRSUB", options);
+            System.exit(-1);
+        }
+
+        graph = HashGraph.readStructureFromFile(input_path);
+        if (graph.vertexCount() < 15000)
+            graph = MatGraph.readStructureFromFile(input_path);
+
+        System.out.println("Graph loaded: " + input_path);
+
+        if (commandLine.hasOption("l")) {
+            long max_time = Long.MAX_VALUE;
+            System.out.println("Subgraphs size: " + subgraph_size);
+            if (commandLine.hasOption("x"))
+                max_time = Long.parseLong(commandLine.getOptionValue("x"));
+            String output_path = commandLine.getOptionValue("l");
+            enumerateInLocal(graph, subgraph_size, output_path, max_time);
+            System.out.printf("Took %s equal to %,d seconds\n", watch, watch.elapsed(TimeUnit.SECONDS));
+            System.exit(0);
+        }
+
+        System.exit(ToolRunner.run(null, new MRSUB(), args));
+    }
+
+    private static void enumerateInLocal(Graph g, int k, String output_path, long max_time) throws IOException {
+        if (k > 8) {
+            System.out.println("Subgraph size must be smaller than 9.");
+            throw new IllegalArgumentException("Subgraph size must be smaller than 9.");
+        }
+        Stopwatch stopwatch = Stopwatch.createStarted();
+
+        LongLongOpenHashMap result = new LongLongOpenHashMap();
+
+        long total_subgraphs = 0;
+        for (int v : graph.getVertices()) {
+            SMPState state = new SMPState(v, graph.getNeighbors(v));
+            LongLongOpenHashMap res = SubgraphEnumerator.enumerateStateHPPC(g, state, k);
+            for (LongLongCursor iter : res) {
+                long key = iter.key;
+                key = BoolArray.boolArrayToLong(new SubGraphStructure(BoolArray.longToBoolArray(key, k * k)).getOrderedForm().getAdjacencyArray().getArray());
+                result.putOrAdd(key, iter.value, iter.value);
+                total_subgraphs += iter.value;
+            }
+            long elapsed = stopwatch.elapsed(TimeUnit.SECONDS);
+            if (verbose)
+                System.out.printf("Elapsed %,d seconds; found %,d subgraphs, and %,d labels.\n", elapsed, total_subgraphs, result.size());
+            if (elapsed > max_time)
+                break;
+        }
+
+        FileWriter writer = new FileWriter(output_path);
+        for (LongLongCursor iter : result) {
+            writer.write(Long.toString(iter.key, 32) + "\t" + iter.value + "\n");
+        }
+        System.out.printf("Total subgraphs: %,d\n", total_subgraphs);
+        System.out.printf("Unique labels: %,d\n", result.size());
+        writer.close();
     }
 
     @Override
@@ -207,6 +295,8 @@ public class MRSUB extends Configured implements Tool {
         job.setOutputValueClass(LongWritable.class);
         job.getConfiguration().set("input_path", WORK_DIR + "/input_graph");
         job.getConfiguration().set("working_dir", WORK_DIR.toString());
+        if (commandLine.hasOption("f"))
+            job.getConfiguration().setBoolean("be_fast", true);
         job.getConfiguration().set("mapred.output.compress", "true");
         job.getConfiguration().set("mapred.output.compression.codec", "org.apache.hadoop.io.compress.GzipCodec");
         job.getConfiguration().set("mapred.compress.map.output", "true");
@@ -228,98 +318,14 @@ public class MRSUB extends Configured implements Tool {
         return result;
     }
 
-    public static void main(String[] args) throws Exception {
-        // create the Options
-        Stopwatch watch = new Stopwatch().start();
-        options.addOption("nm", "nmap", true, "number of map tasks.");
-        options.addOption("nr", "nreduce", true, "number of reduce tasks.");
-        options.addOption("y", "overwrite", false, "overwrite output if exists.");
-        options.addOption("v", "verbose", false, "verbose mode.");
-        options.addOption("mp", "max-par", false, "use maximum parallelism for map tasks. If edges<" + max_par + " then mp=" + max_par + " else mp=#edges.");
-        options.addOption("i", "input", true, "the input graph's file name.");
-        options.addOption("s", "size", true, "size of subgraphs to enumerate.");
-        options.addOption("l", "local", true, "run locally and dump labels to output file.");
-        options.addOption("x", "max", true, "run for at most x seconds (just works in local mode).");
+    private class Edge {
+        int src;
+        int dest;
 
-        parser = new BasicParser();
-        commandLine = parser.parse(options, args);
-
-        if (commandLine.hasOption("v"))
-            verbose = true;
-
-        if (commandLine.hasOption("s")) {
-            subgraph_size = Integer.parseInt(commandLine.getOptionValue("s"));
-            if (subgraph_size < 3) {
-                System.out.println("Size of subgraphs must be greater or equal to 3.");
-                System.exit(-1);
-            }
-        } else {
-            System.out.println("Size of subgraphs must be given.");
-            formatter.printHelp("MRSUB", options);
-            System.exit(-1);
+        public Edge(int src, int dest) {
+            this.src = src;
+            this.dest = dest;
         }
-
-        if (commandLine.hasOption("i")) {
-            input_path = commandLine.getOptionValue("i");
-        } else {
-            System.out.println("Input file must be given.");
-            formatter.printHelp("MRSUB", options);
-            System.exit(-1);
-        }
-
-        graph = HashGraph.readStructureFromFile(input_path);
-        if (graph.vertexCount() < 15000)
-            graph = MatGraph.readStructureFromFile(input_path);
-
-        System.out.println("Graph loaded: " + input_path);
-
-        if (commandLine.hasOption("l")) {
-            long max_time = Long.MAX_VALUE;
-            System.out.println("Subgraphs size: " + subgraph_size);
-            if (commandLine.hasOption("x"))
-                max_time = Long.parseLong(commandLine.getOptionValue("x"));
-            String output_path = commandLine.getOptionValue("l");
-            enumerateInLocal(graph, subgraph_size, output_path, max_time);
-            System.out.printf("Took %s equal to %,d seconds\n", watch, watch.elapsed(TimeUnit.SECONDS));
-            System.exit(0);
-        }
-
-        System.exit(ToolRunner.run(null, new MRSUB(), args));
-    }
-
-    private static void enumerateInLocal(Graph g, int k, String output_path, long max_time) throws IOException {
-        if (k > 8) {
-            System.out.println("Subgraph size must be smaller than 9.");
-            throw new IllegalArgumentException("Subgraph size must be smaller than 9.");
-        }
-        Stopwatch stopwatch = Stopwatch.createStarted();
-
-        LongLongOpenHashMap result = new LongLongOpenHashMap();
-
-        long total_subgraphs = 0;
-        for (int v : graph.getVertices()) {
-            SMPState state = new SMPState(v, graph.getNeighbors(v));
-            LongLongOpenHashMap res = SubgraphEnumerator.enumerateStateHPPC(g, state, k);
-            for (LongLongCursor iter : res) {
-                long key = iter.key;
-                key = BoolArray.boolArrayToLong(new SubGraphStructure(BoolArray.longToBoolArray(key, k * k)).getOrderedForm().getAdjacencyArray().getArray());
-                result.putOrAdd(key, iter.value, iter.value);
-                total_subgraphs += iter.value;
-            }
-            long elapsed = stopwatch.elapsed(TimeUnit.SECONDS);
-            if (verbose)
-                System.out.printf("Elapsed %,d seconds; found %,d subgraphs, and %,d labels.\n", elapsed, total_subgraphs, result.size());
-            if (elapsed > max_time)
-                break;
-        }
-
-        FileWriter writer = new FileWriter(output_path);
-        for (LongLongCursor iter : result) {
-            writer.write(Long.toString(iter.key, 32) + "\t" + iter.value + "\n");
-        }
-        System.out.printf("Total subgraphs: %,d\n", total_subgraphs);
-        System.out.printf("Unique labels: %,d\n", result.size());
-        writer.close();
     }
 
 
